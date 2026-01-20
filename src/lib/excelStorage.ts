@@ -102,18 +102,21 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
     
     // Check if line looks like a student name (simple heuristic)
     const trimmedLine = line.trim();
+    const upperTrimmed = trimmedLine.toUpperCase();
+    
+    // Skip known non-student keywords
+    const skipKeywords = ['VIRT', 'VIRTUAL', 'DATE', 'ROSTER', 'STUDENT NAME', 'PARTICIPANTS', 'INSTRUCTOR', 'TEACHER'];
+    const shouldSkip = skipKeywords.some(keyword => upperTrimmed === keyword || upperTrimmed.includes(keyword + ':'));
+    
     if (trimmedLine && 
-        !trimmedLine.toLowerCase().includes('date') &&
-        !trimmedLine.toLowerCase().includes('roster') &&
-        !trimmedLine.toLowerCase().includes('student name') &&
-        !trimmedLine.toLowerCase().includes('participants') &&
+        !shouldSkip &&
         !trimmedLine.match(/^\d+[\.:\)]\s*$/) && // Skip numbered lines without names
         trimmedLine.length > 2 &&
         trimmedLine.length < 100 &&
         /^[a-zA-Z\d]/.test(trimmedLine)) {
       // Remove leading numbers/bullets (e.g., "1. John Doe" -> "John Doe")
       const cleanedName = trimmedLine.replace(/^[\d]+[\.:\)\-\s]+/, '').trim();
-      if (cleanedName.length > 2) {
+      if (cleanedName.length > 2 && !skipKeywords.includes(cleanedName.toUpperCase())) {
         students.push({
           name: cleanedName,
           courseName: currentCourse,
