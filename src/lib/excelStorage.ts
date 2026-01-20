@@ -77,70 +77,140 @@ export const exportToExcel = (): void => {
 
 // Parse text content to extract student data
 const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] => {
-  const lines = text.split('\n').filter(line => line.trim());
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+
   const students: Omit<Student, 'id' | 'uploadedAt'>[] = [];
-  
   if (lines.length < 2) return students;
-  
+
+  const normalizeYMD = (y: number, m: number, d: number) => {
+    const yyyy = String(y).padStart(4, '0');
+    const mm = String(m).padStart(2, '0');
+    const dd = String(d).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const extractStartDate = (input: string): string | null => {
+    // ISO: 2024-01-05
+    const iso = input.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+    if (iso) return normalizeYMD(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+
+    // US-style: 1/5/2024 or 1-5-24
+    const mdy = input.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+    if (mdy) {
+      let year = Number(mdy[3]);
+      if (year < 100) year += 2000;
+      return normalizeYMD(year, Number(mdy[1]), Number(mdy[2]));
+    }
+
+    // Month name: January 5, 2024 (also supports 5th)
+    const monthName = input.match(
+      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/i
+    );
+    if (monthName) {
+      const normalized = monthName[0].replace(/(\d)(st|nd|rd|th)/i, '$1');
+      const d = new Date(normalized);
+      if (!Number.isNaN(d.getTime())) return normalizeYMD(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    }
+
+    return null;
+  };
+
   // Line 1: Course title
-  const courseName = lines[0].trim();
-  
-  // Line 2: Extract start date (first date found)
-  const dateMatch = lines[1].match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
-  const courseDate = dateMatch ? dateMatch[1] : new Date().toISOString().split('T')[0];
-  
-  // Find the header row with "First Name" and "Last Name" columns
+  const rawCourseLine = lines[0].trim();
+
+  // Line 2: Date range line (we only keep the start date)
+  const courseDate = extractStartDate(lines[1]) ?? extractStartDate(rawCourseLine) ?? 'Unknown';
+
+  // Ensure we don't accidentally treat date text as part of the course name
+  const courseName = rawCourseLine
+    .replace(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g, '')
+    .replace(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/g, '')
+    .replace(
+      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/gi,
+      ''
+    )
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[-–—|]+$/g, '')
+    .trim();
+
+  // Find the header row with BOTH "First Name" and "Last Name" columns
   let firstNameIndex = -1;
   let lastNameIndex = -1;
   let headerRowIndex = -1;
-  
+
+  type Delim = { type: 'tab' } | { type: 'spaces' };
+  let delimiter: Delim | null = null;
+
+  const splitRow = (row: string) => {
+    if (delimiter?.type === 'tab') return row.split('\t');
+    // IMPORTANT: don't split on commas; commas appear in other text (e.g. "yes, and I attest...")
+    return row.split(/\s{2,}/);
+  };
+
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].toLowerCase();
-    // Check if this line contains column headers
-    if (line.includes('first name') || line.includes('firstname')) {
-      // Split by common delimiters (tab, multiple spaces, comma)
-      const columns = lines[i].split(/\t|,|(?:\s{2,})/).map(c => c.trim().toLowerCase());
-      
-      for (let j = 0; j < columns.length; j++) {
-        if (columns[j].includes('first name') || columns[j] === 'firstname') {
-          firstNameIndex = j;
-        }
-        if (columns[j].includes('last name') || columns[j] === 'lastname') {
-          lastNameIndex = j;
-        }
-      }
-      
-      if (firstNameIndex !== -1) {
-        headerRowIndex = i;
-        break;
-      }
+    const lower = lines[i].toLowerCase();
+    const hasFirst = lower.includes('first name') || lower.includes('firstname');
+    const hasLast = lower.includes('last name') || lower.includes('lastname');
+    if (!hasFirst || !hasLast) continue;
+
+    const headerLine = lines[i];
+    delimiter = headerLine.includes('\t') ? { type: 'tab' } : { type: 'spaces' };
+
+    const columns = splitRow(headerLine).map((c) => c.trim().toLowerCase());
+    for (let j = 0; j < columns.length; j++) {
+      const normalized = columns[j].replace(/\s+/g, '');
+      if (normalized === 'firstname' || columns[j].includes('first name')) firstNameIndex = j;
+      if (normalized === 'lastname' || columns[j].includes('last name')) lastNameIndex = j;
+    }
+
+    if (firstNameIndex !== -1 && lastNameIndex !== -1) {
+      headerRowIndex = i;
+      break;
     }
   }
-  
-  // If we found headers, extract student names from subsequent rows
-  if (headerRowIndex !== -1 && firstNameIndex !== -1) {
-    for (let i = headerRowIndex + 1; i < lines.length; i++) {
-      const columns = lines[i].split(/\t|,|(?:\s{2,})/).map(c => c.trim());
-      
-      if (columns.length > firstNameIndex) {
-        const firstName = columns[firstNameIndex] || '';
-        const lastName = lastNameIndex !== -1 && columns.length > lastNameIndex ? columns[lastNameIndex] : '';
-        
-        // Skip empty or header-like rows
-        if (firstName && !firstName.toLowerCase().includes('first name')) {
-          const fullName = lastName ? `${firstName} ${lastName}` : firstName;
-          if (fullName.trim().length > 1) {
-            students.push({
-              name: fullName.trim(),
-              courseName: courseName,
-              date: courseDate,
-            });
-          }
-        }
-      }
-    }
+
+  // Strict mode: if we can't find BOTH columns, import nothing (prevents garbage like "yes, and I attest...")
+  if (headerRowIndex === -1) return students;
+
+  const bannedTokens = new Set(['yes', 'no']);
+  const isBadCell = (value: string) => {
+    const v = value.trim();
+    if (!v) return true;
+    const lower = v.toLowerCase();
+    if (lower.includes('first name') || lower.includes('last name')) return true;
+    if (bannedTokens.has(lower)) return true;
+    if (lower.includes('attest') || lower.includes('agree') || lower.includes('signature')) return true;
+    return false;
+  };
+
+  const maxIndex = Math.max(firstNameIndex, lastNameIndex);
+
+  for (let i = headerRowIndex + 1; i < lines.length; i++) {
+    const cols = splitRow(lines[i]).map((c) => c.trim());
+    if (cols.length <= maxIndex) continue;
+
+    const firstName = cols[firstNameIndex] ?? '';
+    const lastName = cols[lastNameIndex] ?? '';
+
+    // Only accept rows that have BOTH first + last name values
+    if (isBadCell(firstName) || isBadCell(lastName)) continue;
+
+    // Guardrails: names should be relatively short
+    if (firstName.length > 40 || lastName.length > 60) continue;
+
+    const fullName = `${firstName} ${lastName}`.replace(/\s+/g, ' ').trim();
+    if (!fullName) continue;
+
+    students.push({
+      name: fullName,
+      courseName,
+      date: courseDate,
+    });
   }
-  
+
   return students;
 };
 
@@ -182,11 +252,26 @@ const importFromExcelFile = (file: File): Promise<Student[]> => {
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
         const jsonData = XLSX.utils.sheet_to_json(firstSheet);
         
-        const students: Omit<Student, 'id' | 'uploadedAt'>[] = jsonData.map((row: any) => ({
-          name: row['Student Name'] || row['Name'] || row['name'] || row['Student'] || '',
-          courseName: row['Course Name'] || row['Course'] || row['course'] || row['Class'] || '',
-          date: row['Date'] || row['date'] || new Date().toISOString().split('T')[0],
-        })).filter(s => s.name);
+        const students: Omit<Student, 'id' | 'uploadedAt'>[] = jsonData
+          .map((row: any) => {
+            const firstName =
+              row['First Name'] ?? row['FirstName'] ?? row['first name'] ?? row['firstname'] ?? '';
+            const lastName =
+              row['Last Name'] ?? row['LastName'] ?? row['last name'] ?? row['lastname'] ?? '';
+
+            const combinedName = `${String(firstName).trim()} ${String(lastName).trim()}`.trim();
+            const name =
+              row['Student Name'] || row['Name'] || row['name'] || row['Student'] || combinedName || '';
+
+            return {
+              name: String(name).trim(),
+              courseName: String(
+                row['Course Name'] || row['Course'] || row['course'] || row['Class'] || ''
+              ).trim(),
+              date: String(row['Date'] || row['date'] || new Date().toISOString().split('T')[0]).trim(),
+            };
+          })
+          .filter((s) => s.name);
 
         resolve(addStudents(students));
       } catch (error) {
