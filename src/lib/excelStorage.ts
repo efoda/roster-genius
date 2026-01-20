@@ -1,5 +1,10 @@
 import * as XLSX from 'xlsx';
+import mammoth from 'mammoth';
+import * as pdfjsLib from 'pdfjs-dist';
 import { Student, RosterUpload } from '@/types/roster';
+
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 const STORAGE_KEY = 'instructor_roster_data';
 const UPLOADS_KEY = 'instructor_roster_uploads';
@@ -59,19 +64,99 @@ export const exportToExcel = (): void => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Roster Data');
   
-  // Auto-size columns
   const colWidths = [
-    { wch: 25 }, // Student Name
-    { wch: 30 }, // Course Name
-    { wch: 15 }, // Date
-    { wch: 15 }, // Uploaded At
+    { wch: 25 },
+    { wch: 30 },
+    { wch: 15 },
+    { wch: 15 },
   ];
   worksheet['!cols'] = colWidths;
 
   XLSX.writeFile(workbook, `roster_export_${new Date().toISOString().split('T')[0]}.xlsx`);
 };
 
-export const importFromExcel = (file: File): Promise<Student[]> => {
+// Parse text content to extract student data
+const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] => {
+  const lines = text.split('\n').filter(line => line.trim());
+  const students: Omit<Student, 'id' | 'uploadedAt'>[] = [];
+  
+  let currentCourse = '';
+  let currentDate = new Date().toISOString().split('T')[0];
+  
+  // Try to find course name and date patterns
+  const coursePatterns = [/course[:\s]+(.+)/i, /class[:\s]+(.+)/i, /subject[:\s]+(.+)/i];
+  const datePatterns = [/date[:\s]+(.+)/i, /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/];
+  
+  for (const line of lines) {
+    // Check for course name
+    for (const pattern of coursePatterns) {
+      const match = line.match(pattern);
+      if (match) {
+        currentCourse = match[1].trim();
+        break;
+      }
+    }
+    
+    // Check for date
+    for (const pattern of datePatterns) {
+      const match = line.match(pattern);
+      if (match) {
+        currentDate = match[1].trim();
+        break;
+      }
+    }
+    
+    // Check if line looks like a student name (simple heuristic)
+    const trimmedLine = line.trim();
+    if (trimmedLine && 
+        !trimmedLine.toLowerCase().includes('course') &&
+        !trimmedLine.toLowerCase().includes('date') &&
+        !trimmedLine.toLowerCase().includes('class') &&
+        !trimmedLine.toLowerCase().includes('roster') &&
+        !trimmedLine.toLowerCase().includes('student name') &&
+        trimmedLine.length > 2 &&
+        trimmedLine.length < 100 &&
+        /^[a-zA-Z]/.test(trimmedLine)) {
+      students.push({
+        name: trimmedLine,
+        courseName: currentCourse,
+        date: currentDate,
+      });
+    }
+  }
+  
+  return students;
+};
+
+// Import from Word document
+const importFromWord = async (file: File): Promise<Student[]> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  const students = parseTextContent(result.value);
+  return addStudents(students);
+};
+
+// Import from PDF
+const importFromPDF = async (file: File): Promise<Student[]> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items
+      .map((item: any) => item.str)
+      .join(' ');
+    fullText += pageText + '\n';
+  }
+  
+  const students = parseTextContent(fullText);
+  return addStudents(students);
+};
+
+// Import from Excel
+const importFromExcelFile = (file: File): Promise<Student[]> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -95,6 +180,24 @@ export const importFromExcel = (file: File): Promise<Student[]> => {
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
+};
+
+// Main import function that handles all file types
+export const importFromExcel = async (file: File): Promise<Student[]> => {
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  
+  switch (extension) {
+    case 'xlsx':
+    case 'xls':
+      return importFromExcelFile(file);
+    case 'doc':
+    case 'docx':
+      return importFromWord(file);
+    case 'pdf':
+      return importFromPDF(file);
+    default:
+      throw new Error(`Unsupported file type: ${extension}`);
+  }
 };
 
 export const clearAllData = (): void => {
