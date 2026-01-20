@@ -24,8 +24,8 @@ const Index = () => {
     try {
       const extension = file.name.split('.').pop()?.toLowerCase();
       
-      if (!['xlsx', 'xls', 'csv'].includes(extension || '')) {
-        toast.error('Please upload an Excel or CSV file');
+      if (!['xlsx', 'xls', 'doc', 'docx', 'pdf'].includes(extension || '')) {
+        toast.error('Please upload an Excel, Word, or PDF file');
         return;
       }
 
@@ -79,7 +79,7 @@ const Index = () => {
           <TabsContent value="upload" className="max-w-2xl mx-auto">
             <FileUpload onFileSelect={handleFileSelect} isProcessing={isProcessing} />
             <p className="text-center text-sm text-muted-foreground mt-4">
-              Upload Excel (.xlsx, .xls) or CSV files containing student rosters
+              Upload Excel (.xlsx), Word (.doc, .docx), or PDF files containing student rosters
             </p>
           </TabsContent>
 
