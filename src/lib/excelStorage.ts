@@ -80,48 +80,63 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
   const lines = text.split('\n').filter(line => line.trim());
   const students: Omit<Student, 'id' | 'uploadedAt'>[] = [];
   
-  // First non-empty line is the course name
-  let currentCourse = lines.length > 0 ? lines[0].trim() : '';
-  let currentDate = new Date().toISOString().split('T')[0];
+  if (lines.length < 2) return students;
   
-  // Check for date patterns in the document
-  const datePatterns = [/date[:\s]+(.+)/i, /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/];
+  // Line 1: Course title
+  const courseName = lines[0].trim();
   
-  // Start from line 1 (skip first line which is course name)
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    
-    // Check for date
-    for (const pattern of datePatterns) {
-      const match = line.match(pattern);
-      if (match) {
-        currentDate = match[1].trim();
+  // Line 2: Extract start date (first date found)
+  const dateMatch = lines[1].match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+  const courseDate = dateMatch ? dateMatch[1] : new Date().toISOString().split('T')[0];
+  
+  // Find the header row with "First Name" and "Last Name" columns
+  let firstNameIndex = -1;
+  let lastNameIndex = -1;
+  let headerRowIndex = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    // Check if this line contains column headers
+    if (line.includes('first name') || line.includes('firstname')) {
+      // Split by common delimiters (tab, multiple spaces, comma)
+      const columns = lines[i].split(/\t|,|(?:\s{2,})/).map(c => c.trim().toLowerCase());
+      
+      for (let j = 0; j < columns.length; j++) {
+        if (columns[j].includes('first name') || columns[j] === 'firstname') {
+          firstNameIndex = j;
+        }
+        if (columns[j].includes('last name') || columns[j] === 'lastname') {
+          lastNameIndex = j;
+        }
+      }
+      
+      if (firstNameIndex !== -1) {
+        headerRowIndex = i;
         break;
       }
     }
-    
-    // Check if line looks like a student name (simple heuristic)
-    const trimmedLine = line.trim();
-    const upperTrimmed = trimmedLine.toUpperCase();
-    
-    // Skip known non-student keywords
-    const skipKeywords = ['VIRT', 'VIRTUAL', 'DATE', 'ROSTER', 'STUDENT NAME', 'PARTICIPANTS', 'INSTRUCTOR', 'TEACHER'];
-    const shouldSkip = skipKeywords.some(keyword => upperTrimmed === keyword || upperTrimmed.includes(keyword + ':'));
-    
-    if (trimmedLine && 
-        !shouldSkip &&
-        !trimmedLine.match(/^\d+[\.:\)]\s*$/) && // Skip numbered lines without names
-        trimmedLine.length > 2 &&
-        trimmedLine.length < 100 &&
-        /^[a-zA-Z\d]/.test(trimmedLine)) {
-      // Remove leading numbers/bullets (e.g., "1. John Doe" -> "John Doe")
-      const cleanedName = trimmedLine.replace(/^[\d]+[\.:\)\-\s]+/, '').trim();
-      if (cleanedName.length > 2 && !skipKeywords.includes(cleanedName.toUpperCase())) {
-        students.push({
-          name: cleanedName,
-          courseName: currentCourse,
-          date: currentDate,
-        });
+  }
+  
+  // If we found headers, extract student names from subsequent rows
+  if (headerRowIndex !== -1 && firstNameIndex !== -1) {
+    for (let i = headerRowIndex + 1; i < lines.length; i++) {
+      const columns = lines[i].split(/\t|,|(?:\s{2,})/).map(c => c.trim());
+      
+      if (columns.length > firstNameIndex) {
+        const firstName = columns[firstNameIndex] || '';
+        const lastName = lastNameIndex !== -1 && columns.length > lastNameIndex ? columns[lastNameIndex] : '';
+        
+        // Skip empty or header-like rows
+        if (firstName && !firstName.toLowerCase().includes('first name')) {
+          const fullName = lastName ? `${firstName} ${lastName}` : firstName;
+          if (fullName.trim().length > 1) {
+            students.push({
+              name: fullName.trim(),
+              courseName: courseName,
+              date: courseDate,
+            });
+          }
+        }
       }
     }
   }
