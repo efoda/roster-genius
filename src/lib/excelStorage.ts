@@ -80,22 +80,16 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
   const lines = text.split('\n').filter(line => line.trim());
   const students: Omit<Student, 'id' | 'uploadedAt'>[] = [];
   
-  let currentCourse = '';
+  // First non-empty line is the course name
+  let currentCourse = lines.length > 0 ? lines[0].trim() : '';
   let currentDate = new Date().toISOString().split('T')[0];
   
-  // Try to find course name and date patterns
-  const coursePatterns = [/course[:\s]+(.+)/i, /class[:\s]+(.+)/i, /subject[:\s]+(.+)/i];
+  // Check for date patterns in the document
   const datePatterns = [/date[:\s]+(.+)/i, /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/];
   
-  for (const line of lines) {
-    // Check for course name
-    for (const pattern of coursePatterns) {
-      const match = line.match(pattern);
-      if (match) {
-        currentCourse = match[1].trim();
-        break;
-      }
-    }
+  // Start from line 1 (skip first line which is course name)
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
     
     // Check for date
     for (const pattern of datePatterns) {
@@ -109,19 +103,23 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
     // Check if line looks like a student name (simple heuristic)
     const trimmedLine = line.trim();
     if (trimmedLine && 
-        !trimmedLine.toLowerCase().includes('course') &&
         !trimmedLine.toLowerCase().includes('date') &&
-        !trimmedLine.toLowerCase().includes('class') &&
         !trimmedLine.toLowerCase().includes('roster') &&
         !trimmedLine.toLowerCase().includes('student name') &&
+        !trimmedLine.toLowerCase().includes('participants') &&
+        !trimmedLine.match(/^\d+[\.:\)]\s*$/) && // Skip numbered lines without names
         trimmedLine.length > 2 &&
         trimmedLine.length < 100 &&
-        /^[a-zA-Z]/.test(trimmedLine)) {
-      students.push({
-        name: trimmedLine,
-        courseName: currentCourse,
-        date: currentDate,
-      });
+        /^[a-zA-Z\d]/.test(trimmedLine)) {
+      // Remove leading numbers/bullets (e.g., "1. John Doe" -> "John Doe")
+      const cleanedName = trimmedLine.replace(/^[\d]+[\.:\)\-\s]+/, '').trim();
+      if (cleanedName.length > 2) {
+        students.push({
+          name: cleanedName,
+          courseName: currentCourse,
+          date: currentDate,
+        });
+      }
     }
   }
   
