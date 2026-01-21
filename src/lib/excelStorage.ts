@@ -144,9 +144,8 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
   type Delim = { type: 'tab' } | { type: 'spaces' };
   let delimiter: Delim | null = null;
 
-  const splitRow = (row: string) => {
-    if (delimiter?.type === 'tab') return row.split('\t');
-    // IMPORTANT: don't split on commas; commas appear in other text (e.g. "yes, and I attest...")
+  const splitRow = (row: string, delim: Delim | null) => {
+    if (delim?.type === 'tab') return row.split('\t');
     return row.split(/\s{2,}/);
   };
 
@@ -157,23 +156,38 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
     if (!hasFirst || !hasLast) continue;
 
     const headerLine = lines[i];
-    delimiter = headerLine.includes('\t') ? { type: 'tab' } : { type: 'spaces' };
+    const testDelimiter: Delim = headerLine.includes('\t') ? { type: 'tab' } : { type: 'spaces' };
 
-    const columns = splitRow(headerLine).map((c) => c.trim().toLowerCase());
+    const columns = splitRow(headerLine, testDelimiter).map((c) => c.trim().toLowerCase());
+    
+    console.log('Header line found:', headerLine);
+    console.log('Parsed columns:', columns);
+
+    let tempFirstIdx = -1;
+    let tempLastIdx = -1;
+
     for (let j = 0; j < columns.length; j++) {
       const normalized = columns[j].replace(/\s+/g, '');
-      if (normalized === 'firstname' || columns[j].includes('first name')) firstNameIndex = j;
-      if (normalized === 'lastname' || columns[j].includes('last name')) lastNameIndex = j;
+      if (normalized === 'firstname' || columns[j].includes('first name')) tempFirstIdx = j;
+      if (normalized === 'lastname' || columns[j].includes('last name')) tempLastIdx = j;
     }
 
-    if (firstNameIndex !== -1 && lastNameIndex !== -1) {
+    if (tempFirstIdx !== -1 && tempLastIdx !== -1) {
+      firstNameIndex = tempFirstIdx;
+      lastNameIndex = tempLastIdx;
       headerRowIndex = i;
+      delimiter = testDelimiter;
+      console.log('Found header at row', i, 'firstNameIndex:', firstNameIndex, 'lastNameIndex:', lastNameIndex);
       break;
     }
   }
 
-  // Strict mode: if we can't find BOTH columns, import nothing (prevents garbage like "yes, and I attest...")
-  if (headerRowIndex === -1) return students;
+  // Strict mode: if we can't find BOTH columns, import nothing
+  if (headerRowIndex === -1) {
+    console.log('Could not find header row with First Name and Last Name columns');
+    console.log('All lines:', lines.slice(0, 20));
+    return students;
+  }
 
   const bannedTokens = new Set(['yes', 'no']);
   const isBadCell = (value: string) => {
@@ -189,7 +203,7 @@ const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] =>
   const maxIndex = Math.max(firstNameIndex, lastNameIndex);
 
   for (let i = headerRowIndex + 1; i < lines.length; i++) {
-    const cols = splitRow(lines[i]).map((c) => c.trim());
+    const cols = splitRow(lines[i], delimiter).map((c) => c.trim());
     if (cols.length <= maxIndex) continue;
 
     const firstName = cols[firstNameIndex] ?? '';
