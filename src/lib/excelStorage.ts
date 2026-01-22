@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Student, RosterUpload } from '@/types/roster';
+import { parseTextRoster } from '@/lib/roster/parseTextRoster';
 
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
@@ -75,158 +76,8 @@ export const exportToExcel = (): void => {
   XLSX.writeFile(workbook, `roster_export_${new Date().toISOString().split('T')[0]}.xlsx`);
 };
 
-// Parse text content to extract student data
-const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] => {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0);
-
-  const students: Omit<Student, 'id' | 'uploadedAt'>[] = [];
-  if (lines.length < 2) return students;
-
-  const normalizeYMD = (y: number, m: number, d: number) => {
-    const yyyy = String(y).padStart(4, '0');
-    const mm = String(m).padStart(2, '0');
-    const dd = String(d).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  };
-
-  const extractStartDate = (input: string): string | null => {
-    // ISO: 2024-01-05
-    const iso = input.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-    if (iso) return normalizeYMD(Number(iso[1]), Number(iso[2]), Number(iso[3]));
-
-    // US-style: 1/5/2024 or 1-5-24
-    const mdy = input.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
-    if (mdy) {
-      let year = Number(mdy[3]);
-      if (year < 100) year += 2000;
-      return normalizeYMD(year, Number(mdy[1]), Number(mdy[2]));
-    }
-
-    // Month name: January 5, 2024 (also supports 5th)
-    const monthName = input.match(
-      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/i
-    );
-    if (monthName) {
-      const normalized = monthName[0].replace(/(\d)(st|nd|rd|th)/i, '$1');
-      const d = new Date(normalized);
-      if (!Number.isNaN(d.getTime())) return normalizeYMD(d.getFullYear(), d.getMonth() + 1, d.getDate());
-    }
-
-    return null;
-  };
-
-  // Line 1: Course title
-  const rawCourseLine = lines[0].trim();
-
-  // Line 2: Date range line (we only keep the start date)
-  const courseDate = extractStartDate(lines[1]) ?? extractStartDate(rawCourseLine) ?? 'Unknown';
-
-  // Ensure we don't accidentally treat date text as part of the course name
-  const courseName = rawCourseLine
-    .replace(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g, '')
-    .replace(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/g, '')
-    .replace(
-      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/gi,
-      ''
-    )
-    .replace(/\s{2,}/g, ' ')
-    .replace(/[-–—|]+$/g, '')
-    .trim();
-
-  // Find the header row with BOTH "First Name" and "Last Name" columns
-  let firstNameIndex = -1;
-  let lastNameIndex = -1;
-  let headerRowIndex = -1;
-
-  type Delim = { type: 'tab' } | { type: 'spaces' };
-  let delimiter: Delim | null = null;
-
-  const splitRow = (row: string, delim: Delim | null) => {
-    if (delim?.type === 'tab') return row.split('\t');
-    return row.split(/\s{2,}/);
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const lower = lines[i].toLowerCase();
-    const hasFirst = lower.includes('first name') || lower.includes('firstname');
-    const hasLast = lower.includes('last name') || lower.includes('lastname');
-    if (!hasFirst || !hasLast) continue;
-
-    const headerLine = lines[i];
-    const testDelimiter: Delim = headerLine.includes('\t') ? { type: 'tab' } : { type: 'spaces' };
-
-    const columns = splitRow(headerLine, testDelimiter).map((c) => c.trim().toLowerCase());
-    
-    console.log('Header line found:', headerLine);
-    console.log('Parsed columns:', columns);
-
-    let tempFirstIdx = -1;
-    let tempLastIdx = -1;
-
-    for (let j = 0; j < columns.length; j++) {
-      const normalized = columns[j].replace(/\s+/g, '');
-      if (normalized === 'firstname' || columns[j].includes('first name')) tempFirstIdx = j;
-      if (normalized === 'lastname' || columns[j].includes('last name')) tempLastIdx = j;
-    }
-
-    if (tempFirstIdx !== -1 && tempLastIdx !== -1) {
-      firstNameIndex = tempFirstIdx;
-      lastNameIndex = tempLastIdx;
-      headerRowIndex = i;
-      delimiter = testDelimiter;
-      console.log('Found header at row', i, 'firstNameIndex:', firstNameIndex, 'lastNameIndex:', lastNameIndex);
-      break;
-    }
-  }
-
-  // Strict mode: if we can't find BOTH columns, import nothing
-  if (headerRowIndex === -1) {
-    console.log('Could not find header row with First Name and Last Name columns');
-    console.log('All lines:', lines.slice(0, 20));
-    return students;
-  }
-
-  const bannedTokens = new Set(['yes', 'no']);
-  const isBadCell = (value: string) => {
-    const v = value.trim();
-    if (!v) return true;
-    const lower = v.toLowerCase();
-    if (lower.includes('first name') || lower.includes('last name')) return true;
-    if (bannedTokens.has(lower)) return true;
-    if (lower.includes('attest') || lower.includes('agree') || lower.includes('signature')) return true;
-    return false;
-  };
-
-  const maxIndex = Math.max(firstNameIndex, lastNameIndex);
-
-  for (let i = headerRowIndex + 1; i < lines.length; i++) {
-    const cols = splitRow(lines[i], delimiter).map((c) => c.trim());
-    if (cols.length <= maxIndex) continue;
-
-    const firstName = cols[firstNameIndex] ?? '';
-    const lastName = cols[lastNameIndex] ?? '';
-
-    // Only accept rows that have BOTH first + last name values
-    if (isBadCell(firstName) || isBadCell(lastName)) continue;
-
-    // Guardrails: names should be relatively short
-    if (firstName.length > 40 || lastName.length > 60) continue;
-
-    const fullName = `${firstName} ${lastName}`.replace(/\s+/g, ' ').trim();
-    if (!fullName) continue;
-
-    students.push({
-      name: fullName,
-      courseName,
-      date: courseDate,
-    });
-  }
-
-  return students;
-};
+// Parse text content to extract student data (PDF/Word)
+const parseTextContent = (text: string): Omit<Student, 'id' | 'uploadedAt'>[] => parseTextRoster(text);
 
 // Import from Word document
 const importFromWord = async (file: File): Promise<Student[]> => {
